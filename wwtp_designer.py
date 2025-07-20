@@ -2,7 +2,6 @@ import streamlit as st
 import pandas as pd
 import numpy as np
 from fpdf import FPDF
-from fpdf.enums import XPos, YPos
 from graphviz import Source
 import io
 import os
@@ -84,6 +83,13 @@ SOLIDS_PARAMS = {
     'methane_content_percent': 65,
     'polymer_dose_thickening_kg_ton': 4,
     'polymer_dose_dewatering_kg_ton': 8
+}
+
+PUMP_DESIGN_PRESSURES = {
+    'Influent': 20,
+    'EQ_Transfer': 20,
+    'RAS': 20,
+    'WAS': 20
 }
 # ==============================================================================
 # --- Session State Initialization ---
