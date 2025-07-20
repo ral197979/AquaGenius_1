@@ -576,9 +576,9 @@ def generate_pfd_dot(inputs, sizing, results):
         dot = f"""
         digraph G {{
             rankdir=LR;
-            graph [fontname="Arial"];
-            node [shape=box, style="rounded,filled", fillcolor="#EBF4FF", fontname="Arial"];
-            edge [fontname="Arial", fontsize=10];
+            
+            node [shape=box, style="rounded,filled", fillcolor="#EBF4FF"];
+            edge [fontsize=10];
             
             InletAir [label="{inlet_label}"];
             Scrubber [label="2-Stage Scrubber Vessel"];
@@ -598,9 +598,9 @@ def generate_pfd_dot(inputs, sizing, results):
         dot = f"""
         digraph G {{
             rankdir=LR;
-            graph [fontname="Arial"];
-            node [shape=box, style="rounded,filled", fillcolor="#EBF4FF", fontname="Arial"];
-            edge [fontname="Arial", fontsize=10];
+            
+            node [shape=box, style="rounded,filled", fillcolor="#EBF4FF"];
+            edge [fontsize=10];
             
             SludgeIn [label="Sludge from WWTP"];
             Thickener [label="Sludge Thickener"];
@@ -629,9 +629,9 @@ def generate_pfd_dot(inputs, sizing, results):
     dot = f"""
     digraph G {{
         rankdir=LR;
-        graph [fontname="Arial"];
-        node [shape=box, style="rounded,filled", fillcolor="#EBF4FF", fontname="Arial"];
-        edge [fontname="Arial", fontsize=10];
+        
+        node [shape=box, style="rounded,filled", fillcolor="#EBF4FF"];
+        edge [fontsize=10];
         
         Influent [label="{influent_label}"];
         EQ [label="EQ Chamber\\n(Grit/Grease Removal)"];
