@@ -84,13 +84,6 @@ SOLIDS_PARAMS = {
     'polymer_dose_thickening_kg_ton': 4,
     'polymer_dose_dewatering_kg_ton': 8
 }
-
-PUMP_DESIGN_PRESSURES = {
-    'Influent': 20,
-    'EQ_Transfer': 20,
-    'RAS': 20,
-    'WAS': 20
-}
 # ==============================================================================
 # --- Session State Initialization ---
 # ==============================================================================
