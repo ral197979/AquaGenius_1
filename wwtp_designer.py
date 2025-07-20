@@ -255,23 +255,35 @@ def get_inputs():
     }
 
 def calculate_tank_dimensions(volume, shape='rect', depth=4.5):
-    """Calculates tank dimensions based on volume or area."""
+    """
+    Calculates tank dimensions based on volume or area.
+    For circular tanks, if depth is passed as 0, it assumes 'volume' is 'area'
+    and applies a standard depth.
+    """
     if volume <= 0: return {}
+    
     if shape == 'rect':
+        if depth <= 0: return {} # Cannot calculate rectangular dimensions without depth
         area = volume / depth
         width = (area / 3) ** 0.5 if area > 0 else 0
         length = 3 * width
         return {'Length (m)': f"{length:.1f}", 'Width (m)': f"{width:.1f}", 'Depth (m)': f"{depth:.1f}"}
+    
     elif shape == 'circ':
-        # For circular tanks, 'volume' is often treated as 'area' for clarifiers/thickeners
-        # but as actual volume for digesters. This logic handles both.
-        if depth > 0: # Assumes volume is actual volume
+        # If depth is explicitly 0, it's a signal that 'volume' is actually surface area.
+        # This is used for units like clarifiers sized by Surface Overflow Rate (SOR).
+        if depth == 0:
+            area = volume
+            swd = 4.5  # Use a typical Side Water Depth for a clarifier
+            diameter = (4 * area / np.pi) ** 0.5 if area > 0 else 0
+            return {'Diameter (m)': f"{diameter:.1f}", 'SWD (m)': f"{swd:.1f}"}
+        # Otherwise, 'volume' is a real volume, and 'depth' is the specified depth.
+        # This is used for units like digesters.
+        else:
             area = volume / depth
-            diameter = (4 * area / np.pi) ** 0.5
+            diameter = (4 * area / np.pi) ** 0.5 if area > 0 else 0
             return {'Diameter (m)': f"{diameter:.1f}", 'SWD (m)': f"{depth:.1f}"}
-        else: # Assumes volume is area
-            diameter = (4 * volume / np.pi) ** 0.5
-            return {'Diameter (m)': f"{diameter:.1f}"}
+            
     return {}
 
 
@@ -359,8 +371,7 @@ def calculate_scrubber_sizing(inputs):
     air_flow_m3_s = inputs['air_flow_m3_hr'] / 3600
     sizing['media_volume'] = air_flow_m3_s * ebrt_s
     vessel_area = air_flow_m3_s / gas_velocity_m_s
-    vessel_diameter = (4 * vessel_area / np.pi) ** 0.5
-    media_height = sizing['media_volume'] / vessel_area
+    media_height = sizing['media_volume'] / vessel_area if vessel_area > 0 else 0
     
     # For scrubbers, we pass volume and depth to get dimensions
     sizing['dimensions'] = {
@@ -443,8 +454,8 @@ def simulate_process(inputs, sizing, adjustments=None):
             caustic_stoich_ratio = CHEMICAL_FACTORS['naocl_to_h2s_ratio'] * (caustic_chem_props['mw'] / h2s_props['mw'])
         
         pure_caustic_kg_day = h2s_removed_kg_day * caustic_stoich_ratio
-        solution_caustic_kg_day = pure_caustic_kg_day / (inputs['caustic_conc'] / 100)
-        solution_caustic_L_day = solution_caustic_kg_day / caustic_chem_props['density_kg_L']
+        solution_caustic_kg_day = pure_caustic_kg_day / (inputs['caustic_conc'] / 100) if inputs['caustic_conc'] > 0 else 0
+        solution_caustic_L_day = solution_caustic_kg_day / caustic_chem_props['density_kg_L'] if caustic_chem_props['density_kg_L'] > 0 else 0
         
         results[f"{inputs['caustic_chemical']} Consumption (kg/day)"] = solution_caustic_kg_day
         results[f"{inputs['caustic_chemical']} Dosing Rate (L/day)"] = solution_caustic_L_day
@@ -454,8 +465,8 @@ def simulate_process(inputs, sizing, adjustments=None):
         acid_chem_props = CHEMICAL_PROPERTIES[inputs['acid_chemical']]
         acid_stoich_ratio = CHEMICAL_FACTORS['h2so4_to_nh3_ratio'] * (acid_chem_props['mw'] / nh3_props['mw'])
         pure_acid_kg_day = nh3_removed_kg_day * acid_stoich_ratio
-        solution_acid_kg_day = pure_acid_kg_day / (inputs['acid_conc'] / 100)
-        solution_acid_L_day = solution_acid_kg_day / acid_chem_props['density_kg_L']
+        solution_acid_kg_day = pure_acid_kg_day / (inputs['acid_conc'] / 100) if inputs['acid_conc'] > 0 else 0
+        solution_acid_L_day = solution_acid_kg_day / acid_chem_props['density_kg_L'] if acid_chem_props['density_kg_L'] > 0 else 0
 
         results[f"{inputs['acid_chemical']} Consumption (kg/day)"] = solution_acid_kg_day
         results[f"{inputs['acid_chemical']} Dosing Rate (L/day)"] = solution_acid_L_day
@@ -549,7 +560,8 @@ def simulate_process(inputs, sizing, adjustments=None):
     n_removed_bio_kg_day = (inputs['avg_tkn'] - effluent_tkn) * inputs['avg_flow_m3_day'] / 1000
     
     oxygen_demand_kg_day = (bod_removed_kg_day * AERATION_PARAMS['O2_demand_BOD']) + (n_removed_bio_kg_day * AERATION_PARAMS['O2_demand_N'])
-    required_air_m3_day_design = oxygen_demand_kg_day / (AERATION_PARAMS['SOTE'] * AERATION_PARAMS['O2_in_air_mass_fraction'] * AERATION_PARAMS['air_density_kg_m3'])
+    air_denominator = (AERATION_PARAMS['SOTE'] * AERATION_PARAMS['O2_in_air_mass_fraction'] * AERATION_PARAMS['air_density_kg_m3'])
+    required_air_m3_day_design = oxygen_demand_kg_day / air_denominator if air_denominator > 0 else 0
     
     if adjustments:
         required_air_m3_day = required_air_m3_day_design * (adjustments['air_flow_slider'] / 100)
@@ -599,8 +611,8 @@ def generate_pfd_dot(inputs, sizing, results):
             InletAir [label="{inlet_label}"];
             Scrubber [label="2-Stage Scrubber Vessel"];
             TreatedAir [label="{outlet_label}"];
-            AcidChem [shape=oval, fillcolor="#D1FAE5", label="{inputs['acid_chemical']}\\n{results[acid_rate_key]:.1f} L/day"];
-            CausticChem [shape=oval, fillcolor="#FEF3C7", label="{inputs['caustic_chemical']}\\n{results[caustic_rate_key]:.1f} L/day"];
+            AcidChem [shape=oval, fillcolor="#D1FAE5", label="{inputs['acid_chemical']}\\n{results.get(acid_rate_key, 0):.1f} L/day"];
+            CausticChem [shape=oval, fillcolor="#FEF3C7", label="{inputs['caustic_chemical']}\\n{results.get(caustic_rate_key, 0):.1f} L/day"];
             
             InletAir -> Scrubber;
             Scrubber -> TreatedAir;
@@ -622,10 +634,10 @@ def generate_pfd_dot(inputs, sizing, results):
             Thickener [label="Sludge Thickener"];
             Digester [label="Anaerobic Digester"];
             Dewatering [label="Dewatering"];
-            Biosolids [label="Final Biosolids\\n{results['Dewatered Cake Production (kg/day)']:.0f} kg/day"];
-            Biogas [shape=oval, fillcolor="#FEF3C7", label="Biogas\\n{results['Biogas Production (m³/day)']:.0f} m³/day"];
-            ThickeningPolymer [shape=oval, fillcolor="#D1FAE5", label="Polymer\\n{results['Thickening Polymer Consumption (kg/day)']:.1f} kg/day"];
-            DewateringPolymer [shape=oval, fillcolor="#D1FAE5", label="Polymer\\n{results['Dewatering Polymer Consumption (kg/day)']:.1f} kg/day"];
+            Biosolids [label="Final Biosolids\\n{results.get('Dewatered Cake Production (kg/day)', 0):.0f} kg/day"];
+            Biogas [shape=oval, fillcolor="#FEF3C7", label="Biogas\\n{results.get('Biogas Production (m³/day)', 0):.0f} m³/day"];
+            ThickeningPolymer [shape=oval, fillcolor="#D1FAE5", label="Polymer\\n{results.get('Thickening Polymer Consumption (kg/day)', 0):.1f} kg/day"];
+            DewateringPolymer [shape=oval, fillcolor="#D1FAE5", label="Polymer\\n{results.get('Dewatering Polymer Consumption (kg/day)', 0):.1f} kg/day"];
 
             SludgeIn -> Thickener;
             Thickener -> Digester;
@@ -653,6 +665,14 @@ def generate_pfd_dot(inputs, sizing, results):
         EQ [label="EQ Chamber\\n(Grit/Grease Removal)"];
     """
     
+    # Define nodes for the main process train
+    if tech != 'MBBR':
+        dot += 'Anoxic [label="Anoxic Basin"];'
+        dot += 'Aerobic [label="Aerobic Basin"];' if tech == 'CAS' else 'Aerobic [label="IFAS/MBR Basin"];'
+    else:
+        dot += 'Aerobic [label="MBBR Basin"];'
+
+
     process_train = "EQ -> Anoxic -> Aerobic;" if tech != 'MBBR' else "EQ -> Aerobic;"
     
     dot += f"""
@@ -660,6 +680,7 @@ def generate_pfd_dot(inputs, sizing, results):
             label = "{tech.upper()} Process";
             style=filled;
             color=lightgrey;
+            node [style="rounded,filled", fillcolor="#FFFFFF"];
             {process_train}
         }}
     """
@@ -667,23 +688,24 @@ def generate_pfd_dot(inputs, sizing, results):
     separator = "Clarifier" if tech != 'MBR' else "Membrane Tank"
     
     if tech != 'MBBR':
-        ras_flow = results[f'RAS Flow ({flow_unit_label})']
-        was_flow = results[f'WAS Flow ({flow_unit_label})']
+        ras_flow_key = f'RAS Flow ({flow_unit_label})'
+        was_flow_key = f'WAS Flow ({flow_unit_label})'
+        ras_flow = results.get(ras_flow_key, 0)
+        was_flow = results.get(was_flow_key, 0)
+        
         dot += f'Aerobic -> {separator};'
         dot += f'{separator} -> Effluent [label="{effluent_label}"];'
         dot += f'{separator} -> WAS [style=dashed, label="WAS\\n{was_flow:.2f} {flow_unit_label}"];'
         dot += f'{separator} -> RAS [style=dashed]; RAS -> Anoxic [style=dashed, label="RAS\\n{ras_flow:.1f} {flow_unit_label}"];'
     else:
-        # MBBR has no RAS/WAS in this simplified model
-        aerobic_node_name = "MBBR Basin" # Or whatever the key is in dimensions
-        dot += f'EQ -> {aerobic_node_name}; {aerobic_node_name} -> Effluent [label="{effluent_label}"];'
+        dot += f'Aerobic -> Effluent [label="{effluent_label}"];'
 
 
-    if inputs['use_alum'] and results['Alum Dose (kg/day)'] > 0:
+    if inputs['use_alum'] and results.get('Alum Dose (kg/day)', 0) > 0:
         alum_dose = results['Alum Dose (kg/day)']
         dot += f'Alum [shape=oval, fillcolor="#FEF3C7", label="Alum Dose\\n{alum_dose:.1f} kg/d"]; Alum -> Aerobic;'
     
-    if inputs['use_methanol'] and results['Carbon Source Dose (kg/day)'] > 0 and tech != 'MBBR':
+    if inputs['use_methanol'] and results.get('Carbon Source Dose (kg/day)', 0) > 0 and tech != 'MBBR':
         methanol_dose = results['Carbon Source Dose (kg/day)']
         dot += f'Methanol [shape=oval, fillcolor="#D1FAE5", label="Carbon Dose\\n{methanol_dose:.1f} kg/d"]; Methanol -> Anoxic;'
         
@@ -719,32 +741,32 @@ def generate_detailed_pdf_report(inputs, sizing, results):
     if sizing['tech'] != 'Scrubber' and sizing['tech'] != 'Solids':
         sizing_data.extend([
             ["Influent Pumps", "Number", "3 (2 duty, 1 standby)", ""],
-            ["Influent Pumps", "Each Pump Capacity", f"{results['Each Influent Pump Capacity (m³/hr)']:.1f}", "m³/hr"],
-            ["Influent Pumps", "Each Valve Cv", f"{results['Each Influent Pump Valve Cv']:.1f}", ""],
+            ["Influent Pumps", "Each Pump Capacity", f"{results.get('Each Influent Pump Capacity (m³/hr)', 0):.1f}", "m³/hr"],
+            ["Influent Pumps", "Each Valve Cv", f"{results.get('Each Influent Pump Valve Cv', 0):.1f}", ""],
             ["EQ Transfer Pumps", "Number", "2 (1 duty, 1 standby)", ""],
-            ["EQ Transfer Pumps", "Each Pump Capacity", f"{results['EQ Transfer Pump Capacity (m³/hr)']:.1f}", "m³/hr"],
-            ["EQ Transfer Pumps", "Each Valve Cv", f"{results['EQ Transfer Pump Valve Cv']:.1f}", ""],
+            ["EQ Transfer Pumps", "Each Pump Capacity", f"{results.get('EQ Transfer Pump Capacity (m³/hr)', 0):.1f}", "m³/hr"],
+            ["EQ Transfer Pumps", "Each Valve Cv", f"{results.get('EQ Transfer Pump Valve Cv', 0):.1f}", ""],
         ])
         if sizing['tech'] != 'MBBR':
              sizing_data.extend([
-                ["RAS", "Design Flow", f"{results['RAS Design Flow (m³/hr)']:.1f}", "m³/hr"],
-                ["RAS", "Control Valve Cv", f"{results['RAS Valve Cv']:.1f}", ""],
-                ["WAS", "Design Flow", f"{results['WAS Design Flow (m³/hr)']:.1f}", "m³/hr"],
-                ["WAS", "Control Valve Cv", f"{results['WAS Valve Cv']:.1f}", ""],
+                ["RAS", "Design Flow", f"{results.get('RAS Design Flow (m³/hr)', 0):.1f}", "m³/hr"],
+                ["RAS", "Control Valve Cv", f"{results.get('RAS Valve Cv', 0):.1f}", ""],
+                ["WAS", "Design Flow", f"{results.get('WAS Design Flow (m³/hr)', 0):.1f}", "m³/hr"],
+                ["WAS", "Control Valve Cv", f"{results.get('WAS Valve Cv', 0):.1f}", ""],
              ])
     if sizing['tech'] == 'Scrubber':
         sizing_data.extend([
-            ["Acid Dosing Pump", "Capacity", f"{results['Acid Dosing Pump Capacity (L/hr)']:.2f}", "L/hr"],
-            ["Caustic Dosing Pump", "Capacity", f"{results['Caustic Dosing Pump Capacity (L/hr)']:.2f}", "L/hr"]
+            ["Acid Dosing Pump", "Capacity", f"{results.get('Acid Dosing Pump Capacity (L/hr)', 0):.2f}", "L/hr"],
+            ["Caustic Dosing Pump", "Capacity", f"{results.get('Caustic Dosing Pump Capacity (L/hr)', 0):.2f}", "L/hr"]
         ])
     if sizing['tech'] == 'Solids':
         sizing_data.extend([
-            ["Thickener", "GBT Width", f"{sizing['gbt_width_m']:.1f}", "m"]
+            ["Thickener", "GBT Width", f"{sizing.get('gbt_width_m', 0):.1f}", "m"]
         ])
     for tank_name, dims in sizing['dimensions'].items():
         vol_key = [k for k in sizing if tank_name.split(' ')[0].lower() in k and 'volume' in k]
         if vol_key:
-            sizing_data.append([tank_name, "Volume", f"{sizing[vol_key[0]]:,.0f}", "m³"])
+            sizing_data.append([tank_name, "Volume", f"{sizing.get(vol_key[0], 0):,.0f}", "m³"])
         for dim_name, dim_val in dims.items():
             unit = dim_name.split('(')[-1].replace(')', '') if '(' in dim_name else ''
             param_name = dim_name.split('(')[0].strip()
@@ -828,7 +850,7 @@ def display_output(tech_name, inputs, sizing, results, rerun_key_prefix):
         if 'srt' in sizing:
             col3.metric("SRT", f"{sizing['srt']:.1f} days")
         if 'Required Airflow (m³/hr)' in results:
-            col4.metric("Design Airflow", f"{results['Required Airflow (m³/hr)']:.0f} m³/hr")
+            col4.metric("Design Airflow", f"{results.get('Required Airflow (m³/hr)', 0):.0f} m³/hr")
 
     with st.expander("View Initial Design Details"):
         st.subheader("Process Flow Diagram (Initial Design)")
@@ -858,10 +880,10 @@ def display_output(tech_name, inputs, sizing, results, rerun_key_prefix):
 
             st.subheader("Pump & Blower Sizing")
             pump_data = {
-                "Influent Pumps": {"Number": "3 (2 duty, 1 standby)", "Each Pump Capacity (m³/hr)": results['Each Influent Pump Capacity (m³/hr)'], "Each Valve Cv": results['Each Influent Pump Valve Cv']},
-                "EQ Transfer Pumps": {"Number": "2 (1 duty, 1 standby)", "Each Pump Capacity (m³/hr)": results['EQ Transfer Pump Capacity (m³/hr)'], "Each Valve Cv": results['EQ Transfer Pump Valve Cv']},
-                "RAS Pump": {"Design Flow (m³/hr)": results['RAS Design Flow (m³/hr)'], "Design Pressure (psi)": 20, "Valve Cv": results['RAS Valve Cv']},
-                "WAS Pump": {"Design Flow (m³/hr)": results['WAS Design Flow (m³/hr)'], "Design Pressure (psi)": 20, "Valve Cv": results['WAS Valve Cv']}
+                "Influent Pumps": {"Number": "3 (2 duty, 1 standby)", "Each Pump Capacity (m³/hr)": results.get('Each Influent Pump Capacity (m³/hr)', 0), "Each Valve Cv": results.get('Each Influent Pump Valve Cv', 0)},
+                "EQ Transfer Pumps": {"Number": "2 (1 duty, 1 standby)", "Each Pump Capacity (m³/hr)": results.get('EQ Transfer Pump Capacity (m³/hr)', 0), "Each Valve Cv": results.get('EQ Transfer Pump Valve Cv', 0)},
+                "RAS Pump": {"Design Flow (m³/hr)": results.get('RAS Design Flow (m³/hr)', 0), "Design Pressure (psi)": 20, "Valve Cv": results.get('RAS Valve Cv', 0)},
+                "WAS Pump": {"Design Flow (m³/hr)": results.get('WAS Design Flow (m³/hr)', 0), "Design Pressure (psi)": 20, "Valve Cv": results.get('WAS Valve Cv', 0)}
             }
             pump_df = pd.DataFrame(pump_data).T
             format_dict = {col: "{:.2f}" for col in pump_df.columns if pump_df[col].dtype == 'float64'}
@@ -874,14 +896,14 @@ def display_output(tech_name, inputs, sizing, results, rerun_key_prefix):
                 "Acid Dosing Pump": {
                     "Chemical": inputs['acid_chemical'],
                     "Concentration (%)": inputs['acid_conc'],
-                    "Design Rate (L/day)": results[acid_rate_key],
-                    "Pump Capacity (L/hr)": results['Acid Dosing Pump Capacity (L/hr)']
+                    "Design Rate (L/day)": results.get(acid_rate_key, 0),
+                    "Pump Capacity (L/hr)": results.get('Acid Dosing Pump Capacity (L/hr)', 0)
                 },
                 "Caustic Dosing Pump": {
                     "Chemical": inputs['caustic_chemical'],
                     "Concentration (%)": inputs['caustic_conc'],
-                    "Design Rate (L/day)": results[caustic_rate_key],
-                    "Pump Capacity (L/hr)": results['Caustic Dosing Pump Capacity (L/hr)']
+                    "Design Rate (L/day)": results.get(caustic_rate_key, 0),
+                    "Pump Capacity (L/hr)": results.get('Caustic Dosing Pump Capacity (L/hr)', 0)
                 }
             }
             st.dataframe(pd.DataFrame(chem_data).T)
@@ -889,8 +911,9 @@ def display_output(tech_name, inputs, sizing, results, rerun_key_prefix):
 
         st.subheader("Performance & Operational Summary (Initial Design)")
         results_df = pd.DataFrame.from_dict(results, orient='index', columns=['Value'])
-        results_df = results_df[results_df.apply(lambda x: isinstance(x.iloc[0], (int, float)) and x.iloc[0] > 0.01, axis=1)]
-        st.dataframe(results_df.style.format("{:,.2f}"))
+        # Filter only numeric values for display
+        numeric_results_df = results_df[pd.to_numeric(results_df['Value'], errors='coerce').notnull()]
+        st.dataframe(numeric_results_df.style.format("{:,.2f}"))
 
         pdf_data = generate_detailed_pdf_report(inputs, sizing, results)
         st.download_button(
@@ -947,8 +970,8 @@ def display_output(tech_name, inputs, sizing, results, rerun_key_prefix):
         
         # MLSS/MLVSS Sliders
         if tech_name in ['CAS', 'IFAS', 'MBR']:
-            adj_mlss = st.slider("MLSS (mg/L)", 1500, 12000, sizing['mlss'], 100, key=mlss_key, on_change=update_mlvss)
-            adj_mlvss = st.slider("MLVSS (mg/L)", 1000, 10000, int(sizing['mlss'] * KINETIC_PARAMS['VSS_TSS_ratio']), 100, key=mlvss_key, on_change=update_mlss)
+            adj_mlss = st.slider("MLSS (mg/L)", 1500, 12000, sizing.get('mlss', 3500), 100, key=mlss_key, on_change=update_mlvss)
+            adj_mlvss = st.slider("MLVSS (mg/L)", 1000, 10000, int(sizing.get('mlss', 3500) * KINETIC_PARAMS['VSS_TSS_ratio']), 100, key=mlvss_key, on_change=update_mlss)
 
         if st.button("Re-run Simulation with Adjustments", key=f"rerun_{rerun_key_prefix}"):
             adjustments = {
@@ -965,8 +988,8 @@ def display_output(tech_name, inputs, sizing, results, rerun_key_prefix):
         rerun_data = st.session_state.rerun_results[rerun_key_prefix]
         st.subheader("Adjusted Performance Summary")
         rerun_df = pd.DataFrame.from_dict(rerun_data, orient='index', columns=['Value'])
-        rerun_df = rerun_df[rerun_df.apply(lambda x: isinstance(x.iloc[0], (int, float)) and x.iloc[0] > 0.01, axis=1)]
-        st.dataframe(rerun_df.style.format("{:,.2f}"))
+        numeric_rerun_df = rerun_df[pd.to_numeric(rerun_df['Value'], errors='coerce').notnull()]
+        st.dataframe(numeric_rerun_df.style.format("{:,.2f}"))
 
         st.subheader("Adjusted Process Flow Diagram")
         try:
