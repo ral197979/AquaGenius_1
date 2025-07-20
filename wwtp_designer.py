@@ -673,7 +673,7 @@ def generate_pfd_dot(inputs, sizing, results):
     return dot
 
 def generate_detailed_pdf_report(inputs, sizing, results):
-    pdf = FPDF()
+    pdf = PDF()
     pdf.add_page()
 
     pdf.chapter_title("1. Influent Design Criteria")
