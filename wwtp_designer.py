@@ -4,6 +4,8 @@ import numpy as np
 from fpdf import FPDF
 from graphviz import Source
 import io
+import os
+import tempfile
 
 # ==============================================================================
 # --- Page Configuration & Styling ---
@@ -186,17 +188,17 @@ TP,7
 class PDF(FPDF):
     def header(self):
         self.set_font('Arial', 'B', 12)
-        self.cell(0, 10, 'AquaGenius - WWTP Design Report', 0, 1, 'C')
+        self.cell(0, 10, 'AquaGenius - WWTP Design Report', border=0, ln=1, align='C')
         self.ln(5)
 
     def footer(self):
         self.set_y(-15)
         self.set_font('Arial', 'I', 8)
-        self.cell(0, 10, f'Page {self.page_no()}', 0, 0, 'C')
+        self.cell(0, 10, f'Page {self.page_no()}', border=0, ln=0, align='C')
 
     def chapter_title(self, title):
         self.set_font('Arial', 'B', 12)
-        self.cell(0, 6, title, 0, 1, 'L')
+        self.cell(0, 6, title, border=0, ln=1, align='L')
         self.ln(4)
 
     def chapter_body(self, data):
@@ -216,12 +218,12 @@ class PDF(FPDF):
         self.set_font('Arial', 'B', 9)
         self.set_fill_color(220, 220, 220)
         for i, h in enumerate(header):
-            self.cell(col_widths[i], 7, h, 1, 0, 'C', 1)
+            self.cell(col_widths[i], 7, h, border=1, ln=0, align='C', fill=1)
         self.ln()
         self.set_font('Arial', '', 9)
         for row in data:
             for i, item in enumerate(row):
-                self.cell(col_widths[i], 6, str(item), 1)
+                self.cell(col_widths[i], 6, str(item), border=1, ln=0)
             self.ln()
         self.ln(5)
 
@@ -271,8 +273,15 @@ def calculate_valve_cv(flow_m3_hr, delta_p_psi=5):
     cv = flow_gpm * (1 / delta_p_psi) ** 0.5
     return cv
 
+def add_prelim_sizing(inputs, sizing):
+    """Adds sizing for preliminary treatment units to a sizing dict."""
+    eq_volume_m3 = inputs['avg_flow_m3_day'] * 0.25 # 6 hours of average flow
+    sizing['dimensions']['EQ Chamber (Grit/Grease)'] = calculate_tank_dimensions(eq_volume_m3)
+    return sizing
+
 def calculate_cas_sizing(inputs):
-    sizing = {'tech': 'CAS'}
+    sizing = {'tech': 'CAS', 'dimensions': {}}
+    sizing = add_prelim_sizing(inputs, sizing)
     sizing['srt'] = 10
     sizing['mlss'] = 3500
     effluent_bod = 10.0
@@ -282,16 +291,15 @@ def calculate_cas_sizing(inputs):
     sizing['aerobic_volume'] = sizing['total_volume'] * 0.7
     sizing['clarifier_sor'] = 24
     sizing['clarifier_area'] = inputs['avg_flow_m3_day'] / sizing['clarifier_sor']
-    sizing['dimensions'] = {
-        'Anoxic Basin': calculate_tank_dimensions(sizing['anoxic_volume']),
-        'Aerobic Basin': calculate_tank_dimensions(sizing['aerobic_volume']),
-        'Clarifier': calculate_tank_dimensions(sizing['clarifier_area'], shape='circ')
-    }
+    sizing['dimensions']['Anoxic Basin'] = calculate_tank_dimensions(sizing['anoxic_volume'])
+    sizing['dimensions']['Aerobic Basin'] = calculate_tank_dimensions(sizing['aerobic_volume'])
+    sizing['dimensions']['Clarifier'] = calculate_tank_dimensions(sizing['clarifier_area'], shape='circ')
     sizing['effluent_targets'] = {'bod': 10, 'tss': 12, 'tkn': 8, 'tp': 2.0}
     return sizing
 
 def calculate_ifas_sizing(inputs):
-    sizing = {'tech': 'IFAS'}
+    sizing = {'tech': 'IFAS', 'dimensions': {}}
+    sizing = add_prelim_sizing(inputs, sizing)
     sizing['srt'] = 8
     sizing['mlss'] = 3000
     sizing['hrt'] = 6
@@ -301,16 +309,15 @@ def calculate_ifas_sizing(inputs):
     sizing['media_volume'] = sizing['aerobic_volume'] * 0.4
     sizing['clarifier_sor'] = 28
     sizing['clarifier_area'] = inputs['avg_flow_m3_day'] / sizing['clarifier_sor']
-    sizing['dimensions'] = {
-        'Anoxic Basin': calculate_tank_dimensions(sizing['anoxic_volume']),
-        'IFAS Basin': calculate_tank_dimensions(sizing['aerobic_volume']),
-        'Clarifier': calculate_tank_dimensions(sizing['clarifier_area'], shape='circ')
-    }
+    sizing['dimensions']['Anoxic Basin'] = calculate_tank_dimensions(sizing['anoxic_volume'])
+    sizing['dimensions']['IFAS Basin'] = calculate_tank_dimensions(sizing['aerobic_volume'])
+    sizing['dimensions']['Clarifier'] = calculate_tank_dimensions(sizing['clarifier_area'], shape='circ')
     sizing['effluent_targets'] = {'bod': 8, 'tss': 10, 'tkn': 5, 'tp': 1.5}
     return sizing
 
 def calculate_mbr_sizing(inputs):
-    sizing = {'tech': 'MBR'}
+    sizing = {'tech': 'MBR', 'dimensions': {}}
+    sizing = add_prelim_sizing(inputs, sizing)
     sizing['srt'] = 15
     sizing['mlss'] = 8000
     sizing['hrt'] = 5
@@ -319,22 +326,19 @@ def calculate_mbr_sizing(inputs):
     sizing['aerobic_volume'] = sizing['total_volume'] * 0.6
     sizing['membrane_flux'] = 20
     sizing['membrane_area'] = (inputs['avg_flow_m3_day'] * 1000 / 24) / sizing['membrane_flux']
-    sizing['dimensions'] = {
-        'Anoxic Tank': calculate_tank_dimensions(sizing['anoxic_volume']),
-        'MBR Tank': calculate_tank_dimensions(sizing['aerobic_volume'])
-    }
+    sizing['dimensions']['Anoxic Tank'] = calculate_tank_dimensions(sizing['anoxic_volume'])
+    sizing['dimensions']['MBR Tank'] = calculate_tank_dimensions(sizing['aerobic_volume'])
     sizing['effluent_targets'] = {'bod': 5, 'tss': 1, 'tkn': 4, 'tp': 1.0}
     return sizing
 
 def calculate_mbbr_sizing(inputs):
-    sizing = {'tech': 'MBBR'}
+    sizing = {'tech': 'MBBR', 'dimensions': {}}
+    sizing = add_prelim_sizing(inputs, sizing)
     sizing['hrt'] = 4
     sizing['total_volume'] = inputs['avg_flow_m3_day'] * sizing['hrt'] / 24
     sizing['aerobic_volume'] = sizing['total_volume']
     sizing['media_volume'] = sizing['aerobic_volume'] * 0.5
-    sizing['dimensions'] = {
-        'MBBR Basin': calculate_tank_dimensions(sizing['aerobic_volume'])
-    }
+    sizing['dimensions']['MBBR Basin'] = calculate_tank_dimensions(sizing['aerobic_volume'])
     sizing['effluent_targets'] = {'bod': 15, 'tss': 20, 'tkn': 10, 'tp': 2.5}
     return sizing
 
@@ -350,7 +354,7 @@ def calculate_scrubber_sizing(inputs):
     media_height = sizing['media_volume'] / vessel_area
     
     sizing['dimensions'] = {
-        'Scrubber Vessel': {'Diameter (m)': f"{vessel_diameter:.1f}", 'Media Height (m)': f"{media_height:.1f}"}
+        'Scrubber Vessel': calculate_tank_dimensions(vessel_area, shape='circ', depth=media_height)
     }
     sizing['recirculation_flow_m3_hr'] = inputs['air_flow_m3_hr'] * 0.01 # Heuristic
     sizing['effluent_targets'] = {'removal_eff': 99.0}
@@ -550,10 +554,12 @@ def simulate_process(inputs, sizing, adjustments=None):
         'Alum Dose (kg/day)': alum_dose_kg, 'Carbon Source Dose (kg/day)': methanol_dose_kg,
         'Total Sludge Production (kg TSS/day)': total_sludge,
         'Required Airflow (m³/hr)': required_air_m3_day / 24,
-        'EQ Peak Pump Rate (m³/hr)': peak_flow_m3_hr_design,
+        'Each Influent Pump Capacity (m³/hr)': (peak_flow_m3_hr_design / 2),
+        'EQ Transfer Pump Capacity (m³/hr)': inputs['avg_flow_m3_day'] / 24,
         'RAS Design Flow (m³/hr)': ras_flow_m3d_design / 24,
         'WAS Design Flow (m³/hr)': was_flow_m3d_design / 24,
-        'EQ Valve Cv': calculate_valve_cv(peak_flow_m3_hr_design),
+        'Each Influent Pump Valve Cv': calculate_valve_cv(peak_flow_m3_hr_design / 2),
+        'EQ Transfer Pump Valve Cv': calculate_valve_cv(inputs['avg_flow_m3_day'] / 24),
         'RAS Valve Cv': calculate_valve_cv(ras_flow_m3d_design / 24),
         'WAS Valve Cv': calculate_valve_cv(was_flow_m3d_design / 24)
     }
@@ -628,6 +634,7 @@ def generate_pfd_dot(inputs, sizing, results):
         edge [fontname="Inter", fontsize=10];
         
         Influent [label="{influent_label}"];
+        EQ [label="EQ Chamber\\n(Grit/Grease Removal)"];
     """
     
     process_train = "EQ -> Anoxic -> Aerobic;" if tech != 'MBBR' else "EQ -> Aerobic;"
@@ -661,7 +668,7 @@ def generate_pfd_dot(inputs, sizing, results):
         methanol_dose = results['Carbon Source Dose (kg/day)']
         dot += f'Methanol [shape=oval, fillcolor="#D1FAE5", label="Carbon Dose\\n{methanol_dose:.1f} kg/d"]; Methanol -> Anoxic;'
         
-    dot += f"Influent -> EQ [label=\"Q={inputs['avg_flow_input']:.1f} {flow_unit_label}\"];"
+    dot += f"Influent -> EQ;"
     dot += "}}"
     return dot
 
@@ -692,8 +699,12 @@ def generate_detailed_pdf_report(inputs, sizing, results):
     sizing_data = []
     if sizing['tech'] != 'Scrubber' and sizing['tech'] != 'Solids':
         sizing_data.extend([
-            ["Equalization", "Peak Pump Rate", f"{results['EQ Peak Pump Rate (m³/hr)']:.1f}", "m³/hr"],
-            ["Equalization", "Control Valve Cv", f"{results['EQ Valve Cv']:.1f}", ""],
+            ["Influent Pumps", "Number", "3 (2 duty, 1 standby)", ""],
+            ["Influent Pumps", "Each Pump Capacity", f"{results['Each Influent Pump Capacity (m³/hr)']:.1f}", "m³/hr"],
+            ["Influent Pumps", "Each Valve Cv", f"{results['Each Influent Pump Valve Cv']:.1f}", ""],
+            ["EQ Transfer Pumps", "Number", "2 (1 duty, 1 standby)", ""],
+            ["EQ Transfer Pumps", "Each Pump Capacity", f"{results['EQ Transfer Pump Capacity (m³/hr)']:.1f}", "m³/hr"],
+            ["EQ Transfer Pumps", "Each Valve Cv", f"{results['EQ Transfer Pump Valve Cv']:.1f}", ""],
             ["RAS", "Design Flow", f"{results['RAS Design Flow (m³/hr)']:.1f}", "m³/hr"],
             ["RAS", "Control Valve Cv", f"{results['RAS Valve Cv']:.1f}", ""],
             ["WAS", "Design Flow", f"{results['WAS Design Flow (m³/hr)']:.1f}", "m³/hr"],
@@ -719,9 +730,14 @@ def generate_detailed_pdf_report(inputs, sizing, results):
     pdf.chapter_title("3. Process Flow Diagram")
     dot_string = generate_pfd_dot(inputs, sizing, results)
     s = Source(dot_string, format="png")
-    png_data = s.pipe()
-    with io.BytesIO(png_data) as png_file:
-        pdf.image(png_file, x=10, w=pdf.w - 20)
+    
+    with tempfile.NamedTemporaryFile(delete=False, suffix=".png") as tmp_file:
+        s.render(os.path.splitext(tmp_file.name)[0], cleanup=True)
+        image_path = tmp_file.name
+    
+    pdf.image(image_path, x=10, w=pdf.w - 20)
+    os.remove(image_path)
+    
     pdf.ln(5)
 
     pdf.chapter_title("4. Performance & Operational Summary")
@@ -734,7 +750,7 @@ def generate_detailed_pdf_report(inputs, sizing, results):
             perf_data.append([param, f"{val:.2f}", unit])
     pdf.create_table(perf_header, perf_data, col_widths=[90, 45, 45])
 
-    return bytes(pdf.output(dest='S'))
+    return pdf.output(dest='S').encode('latin-1')
 
 def display_output(tech_name, inputs, sizing, results, rerun_key_prefix):
     """Renders the output for a single technology tab."""
@@ -747,7 +763,7 @@ def display_output(tech_name, inputs, sizing, results, rerun_key_prefix):
     col1, col2, col3, col4 = st.columns(4)
     if tech_name == 'Air Scrubber':
         col1.metric("Vessel Diameter", f"{sizing['dimensions']['Scrubber Vessel']['Diameter (m)']}", "m")
-        col2.metric("Media Height", f"{sizing['dimensions']['Scrubber Vessel']['Media Height (m)']}", "m")
+        col2.metric("Media Height", f"{sizing['dimensions']['Scrubber Vessel']['SWD (m)']}", "m")
         col3.metric("H2S Removal", f"{results['H2S Removal Efficiency (%)']:.1f}", "%")
         col4.metric("NH3 Removal", f"{results['NH3 Removal Efficiency (%)']:.1f}", "%")
     elif tech_name == 'Solids Handling':
@@ -770,7 +786,16 @@ def display_output(tech_name, inputs, sizing, results, rerun_key_prefix):
         pfd_dot_string = generate_pfd_dot(inputs, sizing, results)
         st.graphviz_chart(pfd_dot_string)
 
-        if tech_name not in ['Air Scrubber', 'Solids Handling']:
+        if tech_name in ['Solids Handling', 'Air Scrubber']:
+            st.subheader("Equipment Dimensions")
+            dims_data = []
+            for tank, dims in sizing['dimensions'].items():
+                row = {'Unit': tank}
+                row.update(dims)
+                dims_data.append(row)
+            st.dataframe(pd.DataFrame(dims_data).set_index('Unit'))
+        
+        if tech_name not in ['Air Scrubber', 'Solids Handling', 'MBBR']:
             st.subheader("Tank Dimensions")
             dims_data = []
             for tank, dims in sizing['dimensions'].items():
@@ -781,11 +806,14 @@ def display_output(tech_name, inputs, sizing, results, rerun_key_prefix):
 
             st.subheader("Pump & Blower Sizing")
             pump_data = {
-                "EQ Pump": {"Design Flow (m³/hr)": results['EQ Peak Pump Rate (m³/hr)'], "Design Pressure (psi)": 5, "Valve Cv": results['EQ Valve Cv']},
-                "RAS Pump": {"Design Flow (m³/hr)": results['RAS Design Flow (m³/hr)'], "Design Pressure (psi)": 5, "Valve Cv": results['RAS Valve Cv']},
-                "WAS Pump": {"Design Flow (m³/hr)": results['WAS Design Flow (m³/hr)'], "Design Pressure (psi)": 5, "Valve Cv": results['WAS Valve Cv']}
+                "Influent Pumps": {"Number": "3 (2 duty, 1 standby)", "Each Pump Capacity (m³/hr)": results['Each Influent Pump Capacity (m³/hr)'], "Each Valve Cv": results['Each Influent Pump Valve Cv']},
+                "EQ Transfer Pumps": {"Number": "2 (1 duty, 1 standby)", "Each Pump Capacity (m³/hr)": results['EQ Transfer Pump Capacity (m³/hr)'], "Each Valve Cv": results['EQ Transfer Pump Valve Cv']},
+                "RAS Pump": {"Design Flow (m³/hr)": results['RAS Design Flow (m³/hr)'], "Design Pressure (psi)": 20, "Valve Cv": results['RAS Valve Cv']},
+                "WAS Pump": {"Design Flow (m³/hr)": results['WAS Design Flow (m³/hr)'], "Design Pressure (psi)": 20, "Valve Cv": results['WAS Valve Cv']}
             }
-            st.dataframe(pd.DataFrame(pump_data).T.style.format("{:.2f}"))
+            pump_df = pd.DataFrame(pump_data).T
+            format_dict = {col: "{:.2f}" for col in pump_df.columns if pump_df[col].dtype == 'float64'}
+            st.dataframe(pump_df.style.format(format_dict))
         elif tech_name == 'Air Scrubber':
             st.subheader("Chemical Dosing System")
             acid_rate_key = f"{inputs['acid_chemical']} Dosing Rate (L/day)"
@@ -809,7 +837,7 @@ def display_output(tech_name, inputs, sizing, results, rerun_key_prefix):
 
         st.subheader("Performance & Operational Summary (Initial Design)")
         results_df = pd.DataFrame.from_dict(results, orient='index', columns=['Value'])
-        results_df = results_df[results_df.apply(lambda x: isinstance(x[0], (int, float)) and x[0] > 0.01, axis=1)]
+        results_df = results_df[results_df.apply(lambda x: isinstance(x.iloc[0], (int, float)) and x.iloc[0] > 0.01, axis=1)]
         st.dataframe(results_df.style.format("{:,.2f}"))
 
         pdf_data = generate_detailed_pdf_report(inputs, sizing, results)
@@ -885,7 +913,7 @@ def display_output(tech_name, inputs, sizing, results, rerun_key_prefix):
         rerun_data = st.session_state.rerun_results[rerun_key_prefix]
         st.subheader("Adjusted Performance Summary")
         rerun_df = pd.DataFrame.from_dict(rerun_data, orient='index', columns=['Value'])
-        rerun_df = rerun_df[rerun_df.apply(lambda x: isinstance(x[0], (int, float)) and x[0] > 0.01, axis=1)]
+        rerun_df = rerun_df[rerun_df.apply(lambda x: isinstance(x.iloc[0], (int, float)) and x.iloc[0] > 0.01, axis=1)]
         st.dataframe(rerun_df.style.format("{:,.2f}"))
 
         st.subheader("Adjusted Process Flow Diagram")
