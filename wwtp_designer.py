@@ -112,10 +112,10 @@ TP,7
         """)
         sample_csv = "Parameter,Value\nFlow,10000\nBOD,250\nTSS,220\nTKN,40\nTP,7"
         st.download_button(
-           label="Download Sample CSV",
-           data=sample_csv,
-           file_name='sample_design_criteria.csv',
-           mime='text/csv',
+            label="Download Sample CSV",
+            data=sample_csv,
+            file_name='sample_design_criteria.csv',
+            mime='text/csv',
         )
 
     # --- Initialize default values ---
@@ -263,12 +263,21 @@ def calculate_tank_dimensions(volume, shape='rect', depth=4.5):
         length = 3 * width
         return {'Length (m)': f"{length:.1f}", 'Width (m)': f"{width:.1f}", 'Depth (m)': f"{depth:.1f}"}
     elif shape == 'circ':
-        diameter = (4 * volume / np.pi) ** 0.5
-        return {'Diameter (m)': f"{diameter:.1f}", 'SWD (m)': f"{depth:.1f}"}
+        # For circular tanks, 'volume' is often treated as 'area' for clarifiers/thickeners
+        # but as actual volume for digesters. This logic handles both.
+        if depth > 0: # Assumes volume is actual volume
+            area = volume / depth
+            diameter = (4 * area / np.pi) ** 0.5
+            return {'Diameter (m)': f"{diameter:.1f}", 'SWD (m)': f"{depth:.1f}"}
+        else: # Assumes volume is area
+            diameter = (4 * volume / np.pi) ** 0.5
+            return {'Diameter (m)': f"{diameter:.1f}"}
     return {}
+
 
 def calculate_valve_cv(flow_m3_hr, delta_p_psi=5):
     """Calculates a required valve Cv."""
+    if delta_p_psi <= 0: return 0
     flow_gpm = flow_m3_hr * CONVERSION_FACTORS['flow']['m3_hr_to_gpm']
     cv = flow_gpm * (1 / delta_p_psi) ** 0.5
     return cv
@@ -293,7 +302,7 @@ def calculate_cas_sizing(inputs):
     sizing['clarifier_area'] = inputs['avg_flow_m3_day'] / sizing['clarifier_sor']
     sizing['dimensions']['Anoxic Basin'] = calculate_tank_dimensions(sizing['anoxic_volume'])
     sizing['dimensions']['Aerobic Basin'] = calculate_tank_dimensions(sizing['aerobic_volume'])
-    sizing['dimensions']['Clarifier'] = calculate_tank_dimensions(sizing['clarifier_area'], shape='circ')
+    sizing['dimensions']['Clarifier'] = calculate_tank_dimensions(sizing['clarifier_area'], shape='circ', depth=0) # Pass area as volume, depth=0
     sizing['effluent_targets'] = {'bod': 10, 'tss': 12, 'tkn': 8, 'tp': 2.0}
     return sizing
 
@@ -311,7 +320,7 @@ def calculate_ifas_sizing(inputs):
     sizing['clarifier_area'] = inputs['avg_flow_m3_day'] / sizing['clarifier_sor']
     sizing['dimensions']['Anoxic Basin'] = calculate_tank_dimensions(sizing['anoxic_volume'])
     sizing['dimensions']['IFAS Basin'] = calculate_tank_dimensions(sizing['aerobic_volume'])
-    sizing['dimensions']['Clarifier'] = calculate_tank_dimensions(sizing['clarifier_area'], shape='circ')
+    sizing['dimensions']['Clarifier'] = calculate_tank_dimensions(sizing['clarifier_area'], shape='circ', depth=0)
     sizing['effluent_targets'] = {'bod': 8, 'tss': 10, 'tkn': 5, 'tp': 1.5}
     return sizing
 
@@ -353,8 +362,9 @@ def calculate_scrubber_sizing(inputs):
     vessel_diameter = (4 * vessel_area / np.pi) ** 0.5
     media_height = sizing['media_volume'] / vessel_area
     
+    # For scrubbers, we pass volume and depth to get dimensions
     sizing['dimensions'] = {
-        'Scrubber Vessel': calculate_tank_dimensions(vessel_area, shape='circ', depth=media_height)
+        'Scrubber Vessel': calculate_tank_dimensions(sizing['media_volume'], shape='circ', depth=media_height)
     }
     sizing['recirculation_flow_m3_hr'] = inputs['air_flow_m3_hr'] * 0.01 # Heuristic
     sizing['effluent_targets'] = {'removal_eff': 99.0}
@@ -369,14 +379,14 @@ def calculate_solids_sizing(inputs):
     sizing = {'tech': 'Solids'}
     # Thickener Sizing
     gbt_loading_kg_hr_m = 500 # kg/hr/m
-    gbt_width_m = (total_sludge_kg_day / 24) / gbt_loading_kg_hr_m
+    gbt_width_m = (total_sludge_kg_day / 24) / gbt_loading_kg_hr_m if gbt_loading_kg_hr_m > 0 else 0
     sizing['gbt_width_m'] = gbt_width_m
 
     # Anaerobic Digester Sizing
     thickened_sludge_volume_m3_day = total_sludge_kg_day / (inputs['target_thickened_solids'] / 100 * 1000)
     vs_loading_kg_day = total_sludge_kg_day * KINETIC_PARAMS['VSS_TSS_ratio']
     vs_loading_rate_kg_m3_d = 2.4 # kg VS/m3/d
-    digester_volume = vs_loading_kg_day / vs_loading_rate_kg_m3_d
+    digester_volume = vs_loading_kg_day / vs_loading_rate_kg_m3_d if vs_loading_rate_kg_m3_d > 0 else 0
     
     sizing['dimensions'] = {
         'Anaerobic Digester': calculate_tank_dimensions(digester_volume, shape='circ', depth=10)
@@ -477,7 +487,7 @@ def simulate_process(inputs, sizing, adjustments=None):
             cake_solids_pct *= adjustments['dewatering_polymer_slider'] / 100
         
         cake_solids_pct = min(cake_solids_pct, 40)
-        final_cake_kg_day = digested_sludge_kg_day / (cake_solids_pct / 100)
+        final_cake_kg_day = digested_sludge_kg_day / (cake_solids_pct / 100) if cake_solids_pct > 0 else 0
         dewatering_polymer_kg_day = (digested_sludge_kg_day / 1000) * SOLIDS_PARAMS['polymer_dose_dewatering_kg_ton']
 
         return {
@@ -521,13 +531,15 @@ def simulate_process(inputs, sizing, adjustments=None):
     chemical_sludge = p_removed_chemically_kg_day * 4.5
     total_sludge = tss_produced + chemical_sludge
 
-    was_flow_m3d_design = (total_sludge * 1000) / (0.8 * sizing.get('mlss', 3500)) if sizing['tech'] != 'MBBR' else 0
+    current_mlss = sizing.get('mlss', 3500)
+    if adjustments:
+        current_mlss = adjustments.get('adj_mlss', current_mlss)
+
+    was_flow_m3d_design = (total_sludge * 1000) / (0.8 * current_mlss) if sizing['tech'] != 'MBBR' and current_mlss > 0 else 0
     ras_flow_m3d_design = inputs['avg_flow_m3_day'] * 0.75 if sizing['tech'] != 'MBBR' else 0
     peak_flow_m3_hr_design = (inputs['avg_flow_m3_day'] * 2.5) / 24
 
     if adjustments:
-        current_mlss = adjustments.get('adj_mlss', sizing.get('mlss', 3500))
-        was_flow_m3d_design = (total_sludge * 1000) / (0.8 * current_mlss)
         was_flow_m3d = was_flow_m3d_design * (adjustments['was_flow_slider'] / 100)
         ras_flow_m3d = ras_flow_m3d_design * (adjustments['ras_flow_slider'] / 100)
     else:
@@ -544,13 +556,17 @@ def simulate_process(inputs, sizing, adjustments=None):
     else:
         required_air_m3_day = required_air_m3_day_design
 
-    flow_conv_factor = (CONVERSION_FACTORS['flow'].get(f"{inputs['flow_unit_short']}_to_m3_day", 1) or 1)
+    flow_conv_factor = 1
+    if inputs['flow_unit_short'] == 'MGD':
+        flow_conv_factor = CONVERSION_FACTORS['flow']['MGD_to_m3_day']
+    elif inputs['flow_unit_short'] == 'MLD':
+        flow_conv_factor = CONVERSION_FACTORS['flow']['MLD_to_m3_day']
     
     return {
         'Effluent BOD (mg/L)': effluent_bod, 'Effluent TSS (mg/L)': effluent_tss,
         'Effluent TKN (mg/L)': effluent_tkn, 'Effluent TP (mg/L)': effluent_tp,
-        f'RAS Flow ({inputs["flow_unit_short"]})': ras_flow_m3d / flow_conv_factor,
-        f'WAS Flow ({inputs["flow_unit_short"]})': was_flow_m3d / flow_conv_factor,
+        f'RAS Flow ({inputs["flow_unit_short"]})': ras_flow_m3d / flow_conv_factor if flow_conv_factor > 0 else 0,
+        f'WAS Flow ({inputs["flow_unit_short"]})': was_flow_m3d / flow_conv_factor if flow_conv_factor > 0 else 0,
         'Alum Dose (kg/day)': alum_dose_kg, 'Carbon Source Dose (kg/day)': methanol_dose_kg,
         'Total Sludge Production (kg TSS/day)': total_sludge,
         'Required Airflow (m³/hr)': required_air_m3_day / 24,
@@ -658,13 +674,16 @@ def generate_pfd_dot(inputs, sizing, results):
         dot += f'{separator} -> WAS [style=dashed, label="WAS\\n{was_flow:.2f} {flow_unit_label}"];'
         dot += f'{separator} -> RAS [style=dashed]; RAS -> Anoxic [style=dashed, label="RAS\\n{ras_flow:.1f} {flow_unit_label}"];'
     else:
-        dot += f'Aerobic -> {separator}; {separator} -> Effluent [label="{effluent_label}"];'
+        # MBBR has no RAS/WAS in this simplified model
+        aerobic_node_name = "MBBR Basin" # Or whatever the key is in dimensions
+        dot += f'EQ -> {aerobic_node_name}; {aerobic_node_name} -> Effluent [label="{effluent_label}"];'
+
 
     if inputs['use_alum'] and results['Alum Dose (kg/day)'] > 0:
         alum_dose = results['Alum Dose (kg/day)']
         dot += f'Alum [shape=oval, fillcolor="#FEF3C7", label="Alum Dose\\n{alum_dose:.1f} kg/d"]; Alum -> Aerobic;'
     
-    if inputs['use_methanol'] and results['Carbon Source Dose (kg/day)'] > 0:
+    if inputs['use_methanol'] and results['Carbon Source Dose (kg/day)'] > 0 and tech != 'MBBR':
         methanol_dose = results['Carbon Source Dose (kg/day)']
         dot += f'Methanol [shape=oval, fillcolor="#D1FAE5", label="Carbon Dose\\n{methanol_dose:.1f} kg/d"]; Methanol -> Anoxic;'
         
@@ -705,11 +724,14 @@ def generate_detailed_pdf_report(inputs, sizing, results):
             ["EQ Transfer Pumps", "Number", "2 (1 duty, 1 standby)", ""],
             ["EQ Transfer Pumps", "Each Pump Capacity", f"{results['EQ Transfer Pump Capacity (m³/hr)']:.1f}", "m³/hr"],
             ["EQ Transfer Pumps", "Each Valve Cv", f"{results['EQ Transfer Pump Valve Cv']:.1f}", ""],
-            ["RAS", "Design Flow", f"{results['RAS Design Flow (m³/hr)']:.1f}", "m³/hr"],
-            ["RAS", "Control Valve Cv", f"{results['RAS Valve Cv']:.1f}", ""],
-            ["WAS", "Design Flow", f"{results['WAS Design Flow (m³/hr)']:.1f}", "m³/hr"],
-            ["WAS", "Control Valve Cv", f"{results['WAS Valve Cv']:.1f}", ""],
         ])
+        if sizing['tech'] != 'MBBR':
+             sizing_data.extend([
+                ["RAS", "Design Flow", f"{results['RAS Design Flow (m³/hr)']:.1f}", "m³/hr"],
+                ["RAS", "Control Valve Cv", f"{results['RAS Valve Cv']:.1f}", ""],
+                ["WAS", "Design Flow", f"{results['WAS Design Flow (m³/hr)']:.1f}", "m³/hr"],
+                ["WAS", "Control Valve Cv", f"{results['WAS Valve Cv']:.1f}", ""],
+             ])
     if sizing['tech'] == 'Scrubber':
         sizing_data.extend([
             ["Acid Dosing Pump", "Capacity", f"{results['Acid Dosing Pump Capacity (L/hr)']:.2f}", "L/hr"],
@@ -724,19 +746,44 @@ def generate_detailed_pdf_report(inputs, sizing, results):
         if vol_key:
             sizing_data.append([tank_name, "Volume", f"{sizing[vol_key[0]]:,.0f}", "m³"])
         for dim_name, dim_val in dims.items():
-            sizing_data.append([tank_name, dim_name.split(' ')[0], dim_val, dim_name.split(' ')[1].replace('(', '').replace(')', '')])
+            unit = dim_name.split('(')[-1].replace(')', '') if '(' in dim_name else ''
+            param_name = dim_name.split('(')[0].strip()
+            sizing_data.append([tank_name, param_name, dim_val, unit])
     pdf.create_table(sizing_header, sizing_data, col_widths=[45, 45, 45, 45])
 
     pdf.chapter_title("3. Process Flow Diagram")
-    dot_string = generate_pfd_dot(inputs, sizing, results)
-    s = Source(dot_string, format="png")
-    
-    with tempfile.NamedTemporaryFile(delete=False, suffix=".png") as tmp_file:
-        s.render(os.path.splitext(tmp_file.name)[0], cleanup=True)
-        image_path = tmp_file.name
-    
-    pdf.image(image_path, x=10, w=pdf.w - 20)
-    os.remove(image_path)
+    # --- FIX: Add try-except block to handle Graphviz dependency errors ---
+    try:
+        dot_string = generate_pfd_dot(inputs, sizing, results)
+        s = Source(dot_string, format="png")
+        
+        # Use a temporary directory to be robust
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            # The render function saves the file, so we define the path
+            image_filepath = os.path.join(tmp_dir, 'pfd')
+            s.render(image_filepath, cleanup=True, format='png')
+            
+            # The actual filename will have '.png' appended
+            image_path_with_ext = f"{image_filepath}.png"
+
+            if os.path.exists(image_path_with_ext):
+                pdf.image(image_path_with_ext, x=10, w=pdf.w - 20)
+            else:
+                # This case might occur if rendering fails silently
+                raise FileNotFoundError("Graphviz did not create the output file.")
+
+    except Exception as e:
+        # This block catches CalledProcessError and other exceptions, preventing a crash.
+        print(f"Warning: Graphviz rendering failed. Error: {e}")
+        pdf.set_font('Arial', 'I', 9)
+        pdf.set_text_color(255, 0, 0) # Red text for warning
+        pdf.multi_cell(0, 5, 
+            "Process Flow Diagram could not be rendered in this PDF. "
+            "This is likely because the Graphviz system software is not installed "
+            "in the app's environment. The diagram is still viewable within the main app interface.", 
+            border=1, align='C')
+        pdf.set_text_color(0, 0, 0) # Reset text color
+    # --- END FIX ---
     
     pdf.ln(5)
 
@@ -744,10 +791,12 @@ def generate_detailed_pdf_report(inputs, sizing, results):
     perf_header = ["Parameter", "Value", "Units"]
     perf_data = []
     for key, val in results.items():
-        if isinstance(val, (int, float)) and val > 0.01:
-            unit = key.split('(')[-1].replace(')', '') if '(' in key else 'kg/day'
-            param = key.split('(')[0].strip()
-            perf_data.append([param, f"{val:.2f}", unit])
+        if isinstance(val, (int, float)):
+            # Filter out zero or near-zero values unless it's a target
+            if val > 0.001 or 'ppm' in key or 'Efficiency' in key:
+                unit = key.split('(')[-1].replace(')', '') if '(' in key else ''
+                param = key.split('(')[0].strip()
+                perf_data.append([param, f"{val:.2f}", unit])
     pdf.create_table(perf_header, perf_data, col_widths=[90, 45, 45])
 
     return pdf.output(dest='S').encode('latin-1')
@@ -762,15 +811,15 @@ def display_output(tech_name, inputs, sizing, results, rerun_key_prefix):
     
     col1, col2, col3, col4 = st.columns(4)
     if tech_name == 'Air Scrubber':
-        col1.metric("Vessel Diameter", f"{sizing['dimensions']['Scrubber Vessel']['Diameter (m)']}", "m")
-        col2.metric("Media Height", f"{sizing['dimensions']['Scrubber Vessel']['SWD (m)']}", "m")
-        col3.metric("H2S Removal", f"{results['H2S Removal Efficiency (%)']:.1f}", "%")
-        col4.metric("NH3 Removal", f"{results['NH3 Removal Efficiency (%)']:.1f}", "%")
+        col1.metric("Vessel Diameter", f"{sizing['dimensions']['Scrubber Vessel'].get('Diameter (m)', 'N/A')}", "m")
+        col2.metric("Media Height", f"{sizing['dimensions']['Scrubber Vessel'].get('SWD (m)', 'N/A')}", "m")
+        col3.metric("H2S Removal", f"{results.get('H2S Removal Efficiency (%)', 0):.1f}", "%")
+        col4.metric("NH3 Removal", f"{results.get('NH3 Removal Efficiency (%)', 0):.1f}", "%")
     elif tech_name == 'Solids Handling':
-        col1.metric("Digester Diameter", f"{sizing['dimensions']['Anaerobic Digester']['Diameter (m)']}", "m")
-        col2.metric("Biogas Production", f"{results['Biogas Production (m³/day)']:.0f}", "m³/day")
-        col3.metric("VSR", f"{results['Volatile Solids Reduction (%)']:.1f}", "%")
-        col4.metric("Biosolids", f"{results['Dewatered Cake Production (kg/day)']:.0f}", "kg/day")
+        col1.metric("Digester Diameter", f"{sizing['dimensions']['Anaerobic Digester'].get('Diameter (m)', 'N/A')}", "m")
+        col2.metric("Biogas Production", f"{results.get('Biogas Production (m³/day)', 0):.0f}", "m³/day")
+        col3.metric("VSR", f"{results.get('Volatile Solids Reduction (%)', 0):.1f}", "%")
+        col4.metric("Biosolids", f"{results.get('Dewatered Cake Production (kg/day)', 0):.0f}", "kg/day")
     else:
         if 'total_volume' in sizing:
             col1.metric("Total Basin Volume", f"{sizing['total_volume'] * vol_factor:,.0f} {vol_unit}")
@@ -783,8 +832,11 @@ def display_output(tech_name, inputs, sizing, results, rerun_key_prefix):
 
     with st.expander("View Initial Design Details"):
         st.subheader("Process Flow Diagram (Initial Design)")
-        pfd_dot_string = generate_pfd_dot(inputs, sizing, results)
-        st.graphviz_chart(pfd_dot_string)
+        try:
+            pfd_dot_string = generate_pfd_dot(inputs, sizing, results)
+            st.graphviz_chart(pfd_dot_string)
+        except Exception as e:
+            st.warning(f"Could not display Process Flow Diagram. Error: {e}")
 
         if tech_name in ['Solids Handling', 'Air Scrubber']:
             st.subheader("Equipment Dimensions")
@@ -875,7 +927,7 @@ def display_output(tech_name, inputs, sizing, results, rerun_key_prefix):
             adjustments = {'digester_mixing_slider': adj_mixing, 'dewatering_polymer_slider': adj_dewatering_polymer}
             rerun_results = simulate_process(inputs, sizing, adjustments)
             st.session_state.rerun_results[rerun_key_prefix] = rerun_results
-    else: # CAS, IFAS, MBR
+    elif tech_name not in ['MBBR']: # CAS, IFAS, MBR
         eq_key = f"{rerun_key_prefix}_eq_slider"
         ras_key = f"{rerun_key_prefix}_ras_slider"
         was_key = f"{rerun_key_prefix}_was_slider"
@@ -917,8 +969,11 @@ def display_output(tech_name, inputs, sizing, results, rerun_key_prefix):
         st.dataframe(rerun_df.style.format("{:,.2f}"))
 
         st.subheader("Adjusted Process Flow Diagram")
-        adjusted_pfd_dot = generate_pfd_dot(inputs, sizing, rerun_data)
-        st.graphviz_chart(adjusted_pfd_dot)
+        try:
+            adjusted_pfd_dot = generate_pfd_dot(inputs, sizing, rerun_data)
+            st.graphviz_chart(adjusted_pfd_dot)
+        except Exception as e:
+            st.warning(f"Could not display adjusted Process Flow Diagram. Error: {e}")
 
 
 # ==============================================================================
